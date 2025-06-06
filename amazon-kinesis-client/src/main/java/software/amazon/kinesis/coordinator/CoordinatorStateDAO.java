@@ -24,6 +24,7 @@ import java.util.Objects;
 
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClientOptions;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClientOptions.AmazonDynamoDBLockClientOptionsBuilder;
+import com.google.common.collect.ImmutableMap;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.MapUtils;
@@ -38,6 +39,7 @@ import software.amazon.awssdk.services.dynamodb.model.BillingMode;
 import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.CreateTableResponse;
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableResponse;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
@@ -62,6 +64,7 @@ import software.amazon.kinesis.annotations.KinesisClientInternalApi;
 import software.amazon.kinesis.common.FutureUtils;
 import software.amazon.kinesis.coordinator.CoordinatorConfig.CoordinatorStateTableConfig;
 import software.amazon.kinesis.coordinator.migration.MigrationState;
+import software.amazon.kinesis.coordinator.streamInfo.StreamInfoState;
 import software.amazon.kinesis.leases.DynamoUtils;
 import software.amazon.kinesis.leases.exceptions.DependencyException;
 import software.amazon.kinesis.leases.exceptions.InvalidStateException;
@@ -83,6 +86,9 @@ public class CoordinatorStateDAO {
     private final DynamoDbClient dynamoDbSyncClient;
 
     private final CoordinatorStateTableConfig config;
+
+    private static final String ENTITY_TYPE = "entityType";
+    private static final String DDB_ENTITY_TYPE = ":entityType";
 
     public CoordinatorStateDAO(
             final DynamoDbAsyncClient dynamoDbAsyncClient, final CoordinatorStateTableConfig config) {
@@ -113,6 +119,51 @@ public class CoordinatorStateDAO {
      *
      * @return list of state
      */
+    public List<CoordinatorState> listCoordinatorStateByEntityType(String entityType)
+            throws ProvisionedThroughputException, DependencyException, InvalidStateException {
+        log.debug("Listing coordinatorState");
+
+        final Map<String, AttributeValue> expressionAttributeValues = ImmutableMap.of(
+                DDB_ENTITY_TYPE, AttributeValue.builder().s(entityType).build());
+
+        ScanRequest scanRequest = ScanRequest.builder()
+                .tableName(config.tableName())
+                .filterExpression(ENTITY_TYPE + " = " + DDB_ENTITY_TYPE)
+                .expressionAttributeValues(expressionAttributeValues)
+                .build();
+
+        try {
+            ScanResponse response = FutureUtils.unwrappingFuture(() -> dynamoDbAsyncClient.scan(scanRequest));
+            final List<CoordinatorState> stateList = new ArrayList<>();
+
+            while (Objects.nonNull(response)) {
+                log.debug("Scan response {}", response);
+                response.items().stream().map(this::fromDynamoRecord).forEach(stateList::add);
+
+                if (!CollectionUtils.isNullOrEmpty(response.lastEvaluatedKey())) {
+                    final ScanRequest continuationRequest = scanRequest.toBuilder()
+                            .exclusiveStartKey(response.lastEvaluatedKey())
+                            .build();
+                    log.debug("Scan request {}", continuationRequest);
+                    response = FutureUtils.unwrappingFuture(() -> dynamoDbAsyncClient.scan(continuationRequest));
+                } else {
+                    log.debug("Scan finished");
+                    response = null;
+                }
+            }
+            return stateList;
+        } catch (final ProvisionedThroughputExceededException e) {
+            log.warn(
+                    "Provisioned throughput on {} has exceeded. It is recommended to increase the IOPs on the table.",
+                    config.tableName());
+            throw new ProvisionedThroughputException(e);
+        } catch (final ResourceNotFoundException e) {
+            throw new DependencyException(e);
+        } catch (final Exception e) {
+            throw new DependencyException(e);
+        }
+    }
+
     public List<CoordinatorState> listCoordinatorState()
             throws ProvisionedThroughputException, DependencyException, InvalidStateException {
         log.debug("Listing coordinatorState");
@@ -284,6 +335,45 @@ public class CoordinatorStateDAO {
         return true;
     }
 
+    /**
+     * Create a new {@link CoordinatorState} if it does not exist.
+     * @param state the state to delete
+     * @return true if state was deleted, false if you cannot be deleted
+     *
+     * @throws DependencyException if DynamoDB delete fails in an unexpected way
+     * @throws InvalidStateException if lease table does not exist
+     * @throws ProvisionedThroughputException if DynamoDB delete fails due to lack of capacity
+     */
+    public boolean deleteCoordinatorState(@NonNull final CoordinatorState state)
+            throws ProvisionedThroughputException, InvalidStateException, DependencyException {
+        log.debug("Deleting lease with leaseKey {}", state.getKey());
+        final DeleteItemRequest request = DeleteItemRequest.builder()
+                .tableName(config.tableName())
+                .key(getCoordinatorStateKey(state.getKey()))
+                .build();
+
+        try {
+            FutureUtils.unwrappingFuture(() -> dynamoDbAsyncClient.deleteItem(request));
+        } catch (final ConditionalCheckFailedException e) {
+            log.info("Not deleting coordinator state because the key already exists");
+            return false;
+        } catch (final ProvisionedThroughputExceededException e) {
+            log.warn(
+                    "Provisioned throughput on {} has exceeded. It is recommended to increase the IOPs"
+                            + " on the table.",
+                    config.tableName());
+            throw new ProvisionedThroughputException(e);
+        } catch (final ResourceNotFoundException e) {
+            throw new InvalidStateException(String.format(
+                    "Cannot delete coordinatorState for key %s, because table %s does not exist",
+                    state.getKey(), config.tableName()));
+        } catch (final DynamoDbException e) {
+            throw new DependencyException(e);
+        }
+        log.info("Coordinator state deleted {}", state);
+        return true;
+    }
+
     private void createTableIfNotExists() throws DependencyException {
         TableDescription tableDescription = getTableDescription();
         if (tableDescription == null) {
@@ -360,6 +450,12 @@ public class CoordinatorStateDAO {
             return migrationState;
         }
 
+        final StreamInfoState streamInfoState = StreamInfoState.deserialize(keyValue, attributes);
+        if (streamInfoState != null) {
+            log.debug("Retrieved StreamInfoState {}", streamInfoState);
+            return streamInfoState;
+        }
+
         final CoordinatorState c =
                 CoordinatorState.builder().key(keyValue).attributes(attributes).build();
         log.debug("Retrieved coordinatorState {}", c);
@@ -372,6 +468,8 @@ public class CoordinatorStateDAO {
         result.put(COORDINATOR_STATE_TABLE_HASH_KEY_ATTRIBUTE_NAME, DynamoUtils.createAttributeValue(state.getKey()));
         if (state instanceof MigrationState) {
             result.putAll(((MigrationState) state).serialize());
+        } else if (state instanceof StreamInfoState) {
+            result.putAll(((StreamInfoState) state).serialize());
         }
         if (!CollectionUtils.isNullOrEmpty(state.getAttributes())) {
             result.putAll(state.getAttributes());
@@ -404,6 +502,8 @@ public class CoordinatorStateDAO {
         final HashMap<String, AttributeValueUpdate> updates = new HashMap<>();
         if (state instanceof MigrationState) {
             updates.putAll(((MigrationState) state).getDynamoUpdate());
+        } else if (state instanceof StreamInfoState) {
+            updates.putAll(((StreamInfoState) state).getDynamoUpdate());
         }
         state.getAttributes()
                 .forEach((attribute, value) -> updates.put(

@@ -162,6 +162,7 @@ public class Scheduler implements Runnable {
     private final Function<StreamConfig, ShardSyncTaskManager> shardSyncTaskManagerProvider;
     private final Map<StreamConfig, ShardSyncTaskManager> streamToShardSyncTaskManagerMap = new ConcurrentHashMap<>();
     private final PeriodicShardSyncManager leaderElectedPeriodicShardSyncManager;
+    private final StreamMetadataManager streamMetadataManager;
     private final ShardPrioritization shardPrioritization;
     private final boolean cleanupLeasesUponShardCompletion;
     private final boolean skipShardSyncAtWorkerInitializationIfLeasesExist;
@@ -374,6 +375,14 @@ public class Scheduler implements Runnable {
                 ? null
                 : new SchemaRegistryDecoder(this.retrievalConfig.glueSchemaRegistryDeserializer());
         this.taskFactory = leaseManagementConfig().consumerTaskFactory();
+        this.streamMetadataManager = new StreamMetadataManager(
+                leaderDecider,
+                leaseManagementConfig.workerIdentifier(),
+                NEW_STREAM_CHECK_INTERVAL_MILLIS,
+                metricsFactory,
+                coordinatorStateDAO,
+                currentStreamConfigMap,
+                isMultiStreamMode);
     }
 
     /**
@@ -508,6 +517,7 @@ public class Scheduler implements Runnable {
                     }
                     log.info("Scheduling periodicShardSync");
                     leaderElectedPeriodicShardSyncManager.start(leaderDecider);
+                    streamMetadataManager.start();
                     streamSyncWatch.start();
                     isDone = true;
                 } catch (final Exception e) {
@@ -519,6 +529,7 @@ public class Scheduler implements Runnable {
                     try {
                         Thread.sleep(schedulerInitializationBackoffTimeMillis);
                         leaderElectedPeriodicShardSyncManager.stop();
+                        streamMetadataManager.stop();
                     } catch (InterruptedException e) {
                         log.debug("Sleep interrupted while initializing worker.");
                     }
@@ -742,7 +753,8 @@ public class Scheduler implements Runnable {
                     log.info("Stale streams to delete: {}", deletedStreamSet);
                     staleStreamIdsToBeDeleted.addAll(deletedStreamSet);
                 }
-                final Set<StreamIdentifier> deletedStreamsLeases = deleteMultiStreamLeases(staleStreamIdsToBeDeleted);
+                final Set<StreamIdentifier> deletedStreamsLeases =
+                        deleteMultiStreamLeasesAndStreamInfo(staleStreamIdsToBeDeleted);
                 streamsSynced.addAll(deletedStreamsLeases);
 
                 // Purge the active streams from stale streams list.
@@ -806,7 +818,7 @@ public class Scheduler implements Runnable {
         }
     }
 
-    private Set<StreamIdentifier> deleteMultiStreamLeases(Set<StreamIdentifier> streamIdentifiers)
+    private Set<StreamIdentifier> deleteMultiStreamLeasesAndStreamInfo(Set<StreamIdentifier> streamIdentifiers)
             throws DependencyException, ProvisionedThroughputException, InvalidStateException {
         if (streamIdentifiers.isEmpty()) {
             return Collections.emptySet();
@@ -826,10 +838,12 @@ public class Scheduler implements Runnable {
             // to breach the hole confidence interval threshold.
             currentStreamConfigMap.remove(streamIdentifier);
             // Deleting leases will cause the workers to shutdown the record processors for these shards.
-            if (deleteMultiStreamLeases(streamIdToShardsMap.get(streamIdentifier.serialize()))) {
+            if (deleteMultiStreamLeasesAndStreamInfo(streamIdToShardsMap.get(streamIdentifier.serialize()))) {
                 staleStreamDeletionMap.remove(streamIdentifier);
                 streamsSynced.add(streamIdentifier);
             }
+            // Cleaning up streamInfo from coordinatorState for old/deleted streams
+            streamMetadataManager.delete(streamIdentifier);
         }
         if (!streamsSynced.isEmpty()) {
             // map keys are StreamIdentifiers, which are members of StreamConfig, and therefore redundant
@@ -838,7 +852,7 @@ public class Scheduler implements Runnable {
         return streamsSynced;
     }
 
-    private boolean deleteMultiStreamLeases(List<MultiStreamLease> leases) {
+    private boolean deleteMultiStreamLeasesAndStreamInfo(List<MultiStreamLease> leases) {
         if (leases != null) {
             for (MultiStreamLease lease : leases) {
                 try {
@@ -1037,6 +1051,7 @@ public class Scheduler implements Runnable {
             leaseCleanupManager.shutdown();
 
             leaderElectedPeriodicShardSyncManager.stop();
+            streamMetadataManager.stop();
             workerStateChangeListener.onWorkerStateChange(WorkerStateChangeListener.WorkerState.SHUT_DOWN);
         }
     }

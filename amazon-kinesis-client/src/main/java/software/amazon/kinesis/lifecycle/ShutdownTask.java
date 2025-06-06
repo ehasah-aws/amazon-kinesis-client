@@ -322,6 +322,8 @@ public class ShutdownTask implements ConsumerTask {
                 final long startTime = System.currentTimeMillis();
                 boolean success = false;
                 try {
+                    // We want to ensure that starting from now the caller doesn’t create leases
+                    // before streamInfo is added to the coordinator table already
                     leaseRefresher.createLeaseIfNotExists(leaseToCreate);
                     success = true;
                 } finally {

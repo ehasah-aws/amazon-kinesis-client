@@ -130,6 +130,10 @@ public class MigrationState extends CoordinatorState {
             }
             final MigrationState migrationState = new MigrationState(
                     MIGRATION_HASH_KEY, clientVersion, modifiedBy, modifiedTimestamp, historyList, mutableAttributes);
+            if (mutableAttributes.containsKey("entityType")) {
+                migrationState.entityType =
+                        mutableAttributes.remove("entityType").s();
+            }
 
             if (!mutableAttributes.isEmpty()) {
                 log.info("Unknown attributes {} for state {}", mutableAttributes, migrationState);

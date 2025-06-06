@@ -186,6 +186,8 @@ public class HierarchicalShardSyncer {
             final long startTime = System.currentTimeMillis();
             boolean success = false;
             try {
+                // We want to ensure that starting from now the caller doesn’t create leases
+                // before streamInfo is added to the coordinator table already
                 if (leaseRefresher.createLeaseIfNotExists(lease)) {
                     createdLeases.add(lease);
                 }
@@ -781,6 +783,10 @@ public class HierarchicalShardSyncer {
         return Optional.ofNullable(multiStreamArgs.streamIdentifier())
                 .map(streamId -> streamId.serialize())
                 .orElse("single_stream_mode");
+    }
+
+    public void createStreamInfo(StreamIdentifier streamIdentifier) {
+        // call some method to call StreamMetadataManager
     }
 
     /**

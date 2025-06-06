@@ -550,6 +550,48 @@ public class CoordinatorStateDAOTest {
         Assertions.assertFalse(updated);
     }
 
+    @Test
+    public void testFindCoordinatorStateByEntityType()
+            throws DependencyException, ProvisionedThroughputException, InvalidStateException {
+        /* Test setup - create class under test and initialize **/
+        final CoordinatorStateDAO doaUnderTest = new CoordinatorStateDAO(
+                dynamoDbAsyncClient, getCoordinatorStateConfig("testCreatingLeaderAndMigrationKey"));
+        doaUnderTest.initialize();
+
+        final String keyValue = "STREAM#123456789:Test:17234321";
+        dynamoDbAsyncClient
+                .putItem(PutItemRequest.builder()
+                        .tableName(tableNameForTest)
+                        .item(new HashMap<String, AttributeValue>() {
+                            {
+                                put("key", AttributeValue.fromS(keyValue));
+                                put("streamId", AttributeValue.fromS("abc123456def-1742279343.ghi"));
+                                put("entityType", AttributeValue.fromS("STREAM"));
+                                put("mb", AttributeValue.fromS("d14831e6-9301-4e4b-8c11-e18a64afb522"));
+                                put("mts", AttributeValue.fromN("1743705889168"));
+                            }
+                        })
+                        .build())
+                .join();
+
+        /* Test step - create a few coordinatorState items with different schema and invoke the test to list items */
+        final CoordinatorState s1 = CoordinatorState.builder()
+                .key("key1")
+                .attributes(new HashMap<String, AttributeValue>() {
+                    {
+                        put("entityType", AttributeValue.fromS("STREAM"));
+                        put("xyz", AttributeValue.fromS("xyz"));
+                    }
+                })
+                .build();
+        final List<CoordinatorState> result = doaUnderTest.listCoordinatorStateByEntityType("STREAM");
+
+        /* Verify - insert succeeded and item matches **/
+
+        final CoordinatorState stateFromDdb = doaUnderTest.getCoordinatorState(keyValue);
+        Assertions.assertNotEquals(s1, stateFromDdb);
+    }
+
     private CoordinatorStateTableConfig getCoordinatorStateConfig(final String applicationName) {
         return getCoordinatorStateConfig(applicationName, BillingMode.PAY_PER_REQUEST, null, null);
     }
