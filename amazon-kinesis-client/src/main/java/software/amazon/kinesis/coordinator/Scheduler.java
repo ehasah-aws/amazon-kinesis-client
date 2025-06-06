@@ -330,7 +330,13 @@ public class Scheduler implements Runnable {
         this.diagnosticEventHandler = new DiagnosticEventLogger();
         this.deletedStreamListProvider = new DeletedStreamListProvider();
         this.shardSyncTaskManagerProvider = streamConfig -> leaseManagementFactory.createShardSyncTaskManager(
-                this.metricsFactory, streamConfig, this.deletedStreamListProvider);
+                this.metricsFactory,
+                streamConfig,
+                this.deletedStreamListProvider,
+                migrationComponentsInitializer.leaderDecider(),
+                10000,
+                coordinatorStateDAO,
+                currentStreamConfigMap);
         this.shardPrioritization = this.coordinatorConfig.shardPrioritization();
         this.cleanupLeasesUponShardCompletion = this.leaseManagementConfig.cleanupLeasesUponShardCompletion();
         this.skipShardSyncAtWorkerInitializationIfLeasesExist =
@@ -375,14 +381,7 @@ public class Scheduler implements Runnable {
                 ? null
                 : new SchemaRegistryDecoder(this.retrievalConfig.glueSchemaRegistryDeserializer());
         this.taskFactory = leaseManagementConfig().consumerTaskFactory();
-        this.streamMetadataManager = new StreamMetadataManager(
-                leaderDecider,
-                leaseManagementConfig.workerIdentifier(),
-                NEW_STREAM_CHECK_INTERVAL_MILLIS,
-                metricsFactory,
-                coordinatorStateDAO,
-                currentStreamConfigMap,
-                isMultiStreamMode);
+        this.streamMetadataManager = leaseManagementFactory.getStreamMetadataManager();
     }
 
     /**

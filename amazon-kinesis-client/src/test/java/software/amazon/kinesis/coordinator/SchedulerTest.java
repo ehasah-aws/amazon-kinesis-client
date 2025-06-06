@@ -1719,6 +1719,18 @@ public class SchedulerTest {
         }
 
         @Override
+        public ShardSyncTaskManager createShardSyncTaskManager(
+                MetricsFactory metricsFactory,
+                StreamConfig streamConfig,
+                DeletedStreamListProvider deletedStreamListProvider,
+                LeaderDecider leaderDecider,
+                long delay,
+                CoordinatorStateDAO coordinatorStateDAO,
+                Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+            return null;
+        }
+
+        @Override
         public DynamoDBLeaseRefresher createLeaseRefresher() {
             return dynamoDBLeaseRefresher;
         }
@@ -1736,6 +1748,33 @@ public class SchedulerTest {
         @Override
         public LeaseCleanupManager createLeaseCleanupManager(MetricsFactory metricsFactory) {
             return leaseCleanupManager;
+        }
+
+        @Override
+        public HierarchicalShardSyncer createHierarchicalShardSyncer(
+                StreamConfig streamConfig,
+                DeletedStreamListProvider deletedStreamListProvider,
+                MetricsFactory metricsFactory,
+                LeaderDecider leaderDecider,
+                long delay,
+                CoordinatorStateDAO coordinatorStateDAO,
+                final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+            return null;
+        }
+
+        @Override
+        public StreamMetadataManager createStreamMetadataManager(
+                LeaderDecider leaderDecider,
+                long delay,
+                MetricsFactory metricsFactory,
+                CoordinatorStateDAO coordinatorStateDAO,
+                Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+            return null;
+        }
+
+        @Override
+        public StreamMetadataManager getStreamMetadataManager() {
+            return null;
         }
     }
 

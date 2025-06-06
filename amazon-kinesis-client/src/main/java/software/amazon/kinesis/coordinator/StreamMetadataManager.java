@@ -56,7 +56,7 @@ public class StreamMetadataManager {
     private static final Pattern STREAM_IDENTIFIER_PATTERN =
             Pattern.compile("(?<accountId>[0-9]+):(?<streamName>[^:]+):(?<creationEpoch>[0-9]+)");
 
-    StreamMetadataManager(
+    public StreamMetadataManager(
             LeaderDecider leaderDecider,
             String currentWorkerId,
             long delay,

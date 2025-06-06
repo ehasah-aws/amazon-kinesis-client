@@ -17,6 +17,7 @@ package software.amazon.kinesis.leases.dynamodb;
 
 import java.time.Duration;
 import java.util.Collection;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
@@ -35,7 +36,11 @@ import software.amazon.kinesis.annotations.KinesisClientInternalApi;
 import software.amazon.kinesis.common.DdbTableConfig;
 import software.amazon.kinesis.common.LeaseCleanupConfig;
 import software.amazon.kinesis.common.StreamConfig;
+import software.amazon.kinesis.common.StreamIdentifier;
+import software.amazon.kinesis.coordinator.CoordinatorStateDAO;
 import software.amazon.kinesis.coordinator.DeletedStreamListProvider;
+import software.amazon.kinesis.coordinator.LeaderDecider;
+import software.amazon.kinesis.coordinator.StreamMetadataManager;
 import software.amazon.kinesis.leases.HierarchicalShardSyncer;
 import software.amazon.kinesis.leases.KinesisShardDetector;
 import software.amazon.kinesis.leases.LeaseCleanupManager;
@@ -109,6 +114,7 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
     private final LeaseCleanupConfig leaseCleanupConfig;
     private final LeaseManagementConfig.GracefulLeaseHandoffConfig gracefulLeaseHandoffConfig;
     private long leaseAssignmentIntervalMillis;
+    private StreamMetadataManager streamMetadataManager;
 
     /**
      * Constructor.
@@ -259,7 +265,11 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
     public ShardSyncTaskManager createShardSyncTaskManager(
             MetricsFactory metricsFactory,
             StreamConfig streamConfig,
-            DeletedStreamListProvider deletedStreamListProvider) {
+            DeletedStreamListProvider deletedStreamListProvider,
+            LeaderDecider leaderDecider,
+            long delay,
+            CoordinatorStateDAO coordinatorStateDAO,
+            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
         return new ShardSyncTaskManager(
                 this.createShardDetector(streamConfig),
                 this.createLeaseRefresher(),
@@ -268,8 +278,14 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
                 ignoreUnexpectedChildShards,
                 shardSyncIntervalMillis,
                 executorService,
-                new HierarchicalShardSyncer(
-                        isMultiStreamMode, streamConfig.streamIdentifier().toString(), deletedStreamListProvider),
+                createHierarchicalShardSyncer(
+                        streamConfig,
+                        deletedStreamListProvider,
+                        metricsFactory,
+                        leaderDecider,
+                        delay,
+                        coordinatorStateDAO,
+                        currentStreamConfigMap),
                 metricsFactory);
     }
 
@@ -329,5 +345,35 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
                 leaseCleanupConfig.leaseCleanupIntervalMillis(),
                 leaseCleanupConfig.completedLeaseCleanupIntervalMillis(),
                 leaseCleanupConfig.garbageLeaseCleanupIntervalMillis());
+    }
+
+    public HierarchicalShardSyncer createHierarchicalShardSyncer(
+            StreamConfig streamConfig,
+            DeletedStreamListProvider deletedStreamListProvider,
+            MetricsFactory metricsFactory,
+            LeaderDecider leaderDecider,
+            long delay,
+            CoordinatorStateDAO coordinatorStateDAO,
+            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+        streamMetadataManager = createStreamMetadataManager(
+                leaderDecider, delay, metricsFactory, coordinatorStateDAO, currentStreamConfigMap);
+        return new HierarchicalShardSyncer(
+                isMultiStreamMode, streamConfig.streamIdentifier().toString(), deletedStreamListProvider);
+    }
+
+    public StreamMetadataManager createStreamMetadataManager(
+            final LeaderDecider leaderDecider,
+            final long delay,
+            final MetricsFactory metricsFactory,
+            CoordinatorStateDAO coordinatorStateDAO,
+            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+        return new StreamMetadataManager(
+                leaderDecider,
+                workerIdentifier,
+                delay,
+                metricsFactory,
+                coordinatorStateDAO,
+                currentStreamConfigMap,
+                isMultiStreamMode);
     }
 }
