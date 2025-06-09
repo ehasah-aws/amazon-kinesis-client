@@ -41,6 +41,7 @@ import software.amazon.kinesis.coordinator.CoordinatorStateDAO;
 import software.amazon.kinesis.coordinator.DeletedStreamListProvider;
 import software.amazon.kinesis.coordinator.LeaderDecider;
 import software.amazon.kinesis.coordinator.StreamMetadataManager;
+import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
 import software.amazon.kinesis.leases.HierarchicalShardSyncer;
 import software.amazon.kinesis.leases.KinesisShardDetector;
 import software.amazon.kinesis.leases.LeaseCleanupManager;
@@ -114,7 +115,6 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
     private final LeaseCleanupConfig leaseCleanupConfig;
     private final LeaseManagementConfig.GracefulLeaseHandoffConfig gracefulLeaseHandoffConfig;
     private long leaseAssignmentIntervalMillis;
-    private StreamMetadataManager streamMetadataManager;
 
     /**
      * Constructor.
@@ -265,11 +265,7 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
     public ShardSyncTaskManager createShardSyncTaskManager(
             MetricsFactory metricsFactory,
             StreamConfig streamConfig,
-            DeletedStreamListProvider deletedStreamListProvider,
-            LeaderDecider leaderDecider,
-            long delay,
-            CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+            DeletedStreamListProvider deletedStreamListProvider) {
         return new ShardSyncTaskManager(
                 this.createShardDetector(streamConfig),
                 this.createLeaseRefresher(),
@@ -278,14 +274,8 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
                 ignoreUnexpectedChildShards,
                 shardSyncIntervalMillis,
                 executorService,
-                createHierarchicalShardSyncer(
-                        streamConfig,
-                        deletedStreamListProvider,
-                        metricsFactory,
-                        leaderDecider,
-                        delay,
-                        coordinatorStateDAO,
-                        currentStreamConfigMap),
+                new HierarchicalShardSyncer(
+                        isMultiStreamMode, streamConfig.streamIdentifier().toString(), deletedStreamListProvider),
                 metricsFactory);
     }
 
@@ -347,26 +337,13 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
                 leaseCleanupConfig.garbageLeaseCleanupIntervalMillis());
     }
 
-    public HierarchicalShardSyncer createHierarchicalShardSyncer(
-            StreamConfig streamConfig,
-            DeletedStreamListProvider deletedStreamListProvider,
-            MetricsFactory metricsFactory,
-            LeaderDecider leaderDecider,
-            long delay,
-            CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
-        streamMetadataManager = createStreamMetadataManager(
-                leaderDecider, delay, metricsFactory, coordinatorStateDAO, currentStreamConfigMap);
-        return new HierarchicalShardSyncer(
-                isMultiStreamMode, streamConfig.streamIdentifier().toString(), deletedStreamListProvider);
-    }
-
     public StreamMetadataManager createStreamMetadataManager(
             final LeaderDecider leaderDecider,
             final long delay,
             final MetricsFactory metricsFactory,
             CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap) {
+            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
+            StreamInfoRefresher streamInfoRefresher) {
         return new StreamMetadataManager(
                 leaderDecider,
                 workerIdentifier,
@@ -374,6 +351,7 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
                 metricsFactory,
                 coordinatorStateDAO,
                 currentStreamConfigMap,
-                isMultiStreamMode);
+                isMultiStreamMode,
+                streamInfoRefresher);
     }
 }

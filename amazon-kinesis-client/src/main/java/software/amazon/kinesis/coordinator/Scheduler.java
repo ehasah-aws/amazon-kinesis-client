@@ -65,6 +65,8 @@ import software.amazon.kinesis.common.StreamIdentifier;
 import software.amazon.kinesis.coordinator.assignment.LeaseAssignmentManager;
 import software.amazon.kinesis.coordinator.migration.MigrationStateMachine;
 import software.amazon.kinesis.coordinator.migration.MigrationStateMachineImpl;
+import software.amazon.kinesis.coordinator.streamInfo.DynamoDBStreamInfoRefresher;
+import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
 import software.amazon.kinesis.leader.DynamoDBLockBasedLeaderDecider;
 import software.amazon.kinesis.leader.MigrationAdaptiveLeaderDecider;
 import software.amazon.kinesis.leases.HierarchicalShardSyncer;
@@ -163,6 +165,7 @@ public class Scheduler implements Runnable {
     private final Map<StreamConfig, ShardSyncTaskManager> streamToShardSyncTaskManagerMap = new ConcurrentHashMap<>();
     private final PeriodicShardSyncManager leaderElectedPeriodicShardSyncManager;
     private final StreamMetadataManager streamMetadataManager;
+    private final StreamInfoRefresher streamInfoRefresher;
     private final ShardPrioritization shardPrioritization;
     private final boolean cleanupLeasesUponShardCompletion;
     private final boolean skipShardSyncAtWorkerInitializationIfLeasesExist;
@@ -330,13 +333,7 @@ public class Scheduler implements Runnable {
         this.diagnosticEventHandler = new DiagnosticEventLogger();
         this.deletedStreamListProvider = new DeletedStreamListProvider();
         this.shardSyncTaskManagerProvider = streamConfig -> leaseManagementFactory.createShardSyncTaskManager(
-                this.metricsFactory,
-                streamConfig,
-                this.deletedStreamListProvider,
-                migrationComponentsInitializer.leaderDecider(),
-                10000,
-                coordinatorStateDAO,
-                currentStreamConfigMap);
+                this.metricsFactory, streamConfig, this.deletedStreamListProvider);
         this.shardPrioritization = this.coordinatorConfig.shardPrioritization();
         this.cleanupLeasesUponShardCompletion = this.leaseManagementConfig.cleanupLeasesUponShardCompletion();
         this.skipShardSyncAtWorkerInitializationIfLeasesExist =
@@ -381,7 +378,10 @@ public class Scheduler implements Runnable {
                 ? null
                 : new SchemaRegistryDecoder(this.retrievalConfig.glueSchemaRegistryDeserializer());
         this.taskFactory = leaseManagementConfig().consumerTaskFactory();
-        this.streamMetadataManager = leaseManagementFactory.getStreamMetadataManager();
+        this.streamInfoRefresher =
+                new DynamoDBStreamInfoRefresher(coordinatorStateDAO, leaseManagementConfig.workerIdentifier());
+        this.streamMetadataManager = leaseManagementFactory.createStreamMetadataManager(
+                leaderDecider, 10000, metricsFactory, coordinatorStateDAO, currentStreamConfigMap, streamInfoRefresher);
     }
 
     /**

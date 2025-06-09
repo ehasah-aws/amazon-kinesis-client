@@ -24,6 +24,7 @@ import software.amazon.kinesis.coordinator.CoordinatorStateDAO;
 import software.amazon.kinesis.coordinator.DeletedStreamListProvider;
 import software.amazon.kinesis.coordinator.LeaderDecider;
 import software.amazon.kinesis.coordinator.StreamMetadataManager;
+import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
 import software.amazon.kinesis.leases.dynamodb.DynamoDBLeaseRefresher;
 import software.amazon.kinesis.lifecycle.ShardConsumer;
 import software.amazon.kinesis.metrics.MetricsFactory;
@@ -64,15 +65,6 @@ public interface LeaseManagementFactory {
         throw new UnsupportedOperationException("createShardSyncTaskManager method not implemented");
     }
 
-    ShardSyncTaskManager createShardSyncTaskManager(
-            MetricsFactory metricsFactory,
-            StreamConfig streamConfig,
-            DeletedStreamListProvider deletedStreamListProvider,
-            LeaderDecider leaderDecider,
-            long delay,
-            CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap);
-
     DynamoDBLeaseRefresher createLeaseRefresher();
 
     /**
@@ -88,23 +80,13 @@ public interface LeaseManagementFactory {
         throw new UnsupportedOperationException("Not implemented");
     }
 
-    LeaseCleanupManager createLeaseCleanupManager(MetricsFactory metricsFactory);
-
-    public HierarchicalShardSyncer createHierarchicalShardSyncer(
-            StreamConfig streamConfig,
-            DeletedStreamListProvider deletedStreamListProvider,
-            MetricsFactory metricsFactory,
-            LeaderDecider leaderDecider,
-            long delay,
-            CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap);
-
     StreamMetadataManager createStreamMetadataManager(
             final LeaderDecider leaderDecider,
             final long delay,
             final MetricsFactory metricsFactory,
             CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap);
+            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
+            StreamInfoRefresher streamInfoRefresher);
 
-    StreamMetadataManager getStreamMetadataManager();
+    LeaseCleanupManager createLeaseCleanupManager(MetricsFactory metricsFactory);
 }

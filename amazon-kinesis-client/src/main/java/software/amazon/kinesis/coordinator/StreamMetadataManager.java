@@ -17,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import software.amazon.kinesis.annotations.KinesisClientInternalApi;
 import software.amazon.kinesis.common.StreamConfig;
 import software.amazon.kinesis.common.StreamIdentifier;
+import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoState;
 import software.amazon.kinesis.leases.exceptions.DependencyException;
 import software.amazon.kinesis.leases.exceptions.InvalidStateException;
@@ -48,6 +49,7 @@ public class StreamMetadataManager {
     private final CoordinatorStateDAO coordinatorStateDAO;
     private final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap;
     private final boolean isMultiStreamingMode;
+    private final StreamInfoRefresher streamInfoRefresher;
 
     /**
      * Pattern for a serialized {@link StreamIdentifier}. The valid format is
@@ -63,8 +65,10 @@ public class StreamMetadataManager {
             MetricsFactory metricsFactory,
             CoordinatorStateDAO coordinatorStateDAO,
             Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
-            boolean isMultiStreamingMode) {
+            boolean isMultiStreamingMode,
+            StreamInfoRefresher streamInfoRefresher) {
         this.leaderDecider = leaderDecider;
+        this.streamInfoRefresher = streamInfoRefresher;
         this.shardSyncThreadPool = Executors.newSingleThreadScheduledExecutor();
         this.currentWorkerId = currentWorkerId;
         this.delay = delay;
@@ -76,7 +80,7 @@ public class StreamMetadataManager {
 
     public synchronized TaskResult start() {
         if (!isRunning) {
-            final Runnable periodicShardSyncer = () -> {
+            final Runnable periodicStreamInfoBackfiller = () -> {
                 try {
                     runStreamSync();
                 } catch (Throwable t) {
@@ -84,7 +88,7 @@ public class StreamMetadataManager {
                 }
             };
             shardSyncThreadPool.scheduleWithFixedDelay(
-                    periodicShardSyncer, INITIAL_DELAY, delay, TimeUnit.MILLISECONDS);
+                    periodicStreamInfoBackfiller, INITIAL_DELAY, delay, TimeUnit.MILLISECONDS);
             isRunning = true;
         }
         return new TaskResult(null);
@@ -153,7 +157,7 @@ public class StreamMetadataManager {
                     needToBackfill.add(streamIdentifier);
                     streamInfoState =
                             new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null, "STREAM");
-                    final boolean created = coordinatorStateDAO.createCoordinatorStateIfNotExists(streamInfoState);
+                    final boolean created = createStreamInfo(streamInfoState);
                     if (!created) {
                         log.debug("Create {} did not succeed", streamInfoState);
                     }
@@ -177,24 +181,24 @@ public class StreamMetadataManager {
      * before stream in added to the coordinator table already.
      *
      * @param streamInfoState The identifier of the stream to create metadata for
-     * @return CompletableFuture<Boolean> that resolves to true if stream was created,
-     *         false if stream already exists
+     * @return true if stream was created, false if stream already exists
      */
-    public void createStreamInfo(StreamInfoState streamInfoState) {
-        create(streamInfoState).thenAccept(created -> {
-            if (created) {
-                log.info("Stream was created successfully");
-                // Do additional processing here
-            } else {
-                log.info("Stream already exists");
-            }
-        });
-    }
-
-    public void delete(StreamIdentifier streamIdentifier)
-            throws ProvisionedThroughputException, InvalidStateException, DependencyException {
-        coordinatorStateDAO.deleteCoordinatorState(
-                new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null, "STREAM"));
+    public boolean createStreamInfo(StreamInfoState streamInfoState) {
+        try {
+            return create(streamInfoState)
+                    .thenApply(created -> {
+                        if (created) {
+                            log.info("Stream was created successfully");
+                        } else {
+                            log.info("Stream already exists");
+                        }
+                        return created;
+                    })
+                    .join();
+        } catch (Exception e) {
+            log.error("Failed to create stream", e);
+            return false;
+        }
     }
 
     private CompletableFuture<Boolean> create(final StreamInfoState streamInfoState) {
@@ -206,6 +210,12 @@ public class StreamMetadataManager {
                 throw new RuntimeException("Failed to create stream metadata", e);
             }
         });
+    }
+
+    public void delete(StreamIdentifier streamIdentifier)
+            throws ProvisionedThroughputException, InvalidStateException, DependencyException {
+        coordinatorStateDAO.deleteCoordinatorState(
+                new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null, "STREAM"));
     }
 
     /**
