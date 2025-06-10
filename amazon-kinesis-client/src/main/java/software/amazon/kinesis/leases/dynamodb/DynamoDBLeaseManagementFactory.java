@@ -37,11 +37,9 @@ import software.amazon.kinesis.common.DdbTableConfig;
 import software.amazon.kinesis.common.LeaseCleanupConfig;
 import software.amazon.kinesis.common.StreamConfig;
 import software.amazon.kinesis.common.StreamIdentifier;
-import software.amazon.kinesis.coordinator.CoordinatorStateDAO;
 import software.amazon.kinesis.coordinator.DeletedStreamListProvider;
-import software.amazon.kinesis.coordinator.LeaderDecider;
-import software.amazon.kinesis.coordinator.StreamMetadataManager;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
+import software.amazon.kinesis.coordinator.streamInfo.StreamMetadataSyncTaskManager;
 import software.amazon.kinesis.leases.HierarchicalShardSyncer;
 import software.amazon.kinesis.leases.KinesisShardDetector;
 import software.amazon.kinesis.leases.LeaseCleanupManager;
@@ -337,21 +335,13 @@ public class DynamoDBLeaseManagementFactory implements LeaseManagementFactory {
                 leaseCleanupConfig.garbageLeaseCleanupIntervalMillis());
     }
 
-    public StreamMetadataManager createStreamMetadataManager(
-            final LeaderDecider leaderDecider,
-            final long delay,
-            final MetricsFactory metricsFactory,
-            CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
-            StreamInfoRefresher streamInfoRefresher) {
-        return new StreamMetadataManager(
-                leaderDecider,
-                workerIdentifier,
-                delay,
-                metricsFactory,
-                coordinatorStateDAO,
-                currentStreamConfigMap,
-                isMultiStreamMode,
-                streamInfoRefresher);
+    @Override
+    public StreamMetadataSyncTaskManager createStreamMetadataSyncManager(
+            Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
+            StreamInfoRefresher streamInfoRefresher,
+            MetricsFactory metricsFactory,
+            StreamConfig streamConfig) {
+        return new StreamMetadataSyncTaskManager(
+                currentStreamConfigMap, streamInfoRefresher, metricsFactory, isMultiStreamMode, streamConfig);
     }
 }

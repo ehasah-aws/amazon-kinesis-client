@@ -4,26 +4,25 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import software.amazon.awssdk.services.cloudwatch.model.StandardUnit;
 import software.amazon.kinesis.annotations.KinesisClientInternalApi;
 import software.amazon.kinesis.common.StreamConfig;
 import software.amazon.kinesis.common.StreamIdentifier;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoState;
-import software.amazon.kinesis.leases.exceptions.DependencyException;
-import software.amazon.kinesis.leases.exceptions.InvalidStateException;
-import software.amazon.kinesis.leases.exceptions.ProvisionedThroughputException;
+import software.amazon.kinesis.coordinator.streamInfo.StreamMetadataSyncTaskManager;
 import software.amazon.kinesis.lifecycle.TaskResult;
 import software.amazon.kinesis.metrics.MetricsFactory;
+import software.amazon.kinesis.metrics.MetricsLevel;
 import software.amazon.kinesis.metrics.MetricsScope;
 import software.amazon.kinesis.metrics.MetricsUtil;
 import software.amazon.kinesis.metrics.NullMetricsScope;
@@ -36,9 +35,9 @@ import software.amazon.kinesis.metrics.NullMetricsScope;
 @EqualsAndHashCode
 @Slf4j
 @KinesisClientInternalApi
-public class StreamMetadataManager {
+public class PeriodicStreamMetadataSyncTaskManager {
     private static final long INITIAL_DELAY = 60 * 1000L;
-    private static final String STREAM_METADATA_MANAGER = "StreamMetadataManager";
+    private static final String STREAM_METADATA_MANAGER = "PeriodicStreamMetadataSyncTaskManager";
     private boolean isRunning;
 
     private final LeaderDecider leaderDecider;
@@ -50,6 +49,8 @@ public class StreamMetadataManager {
     private final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap;
     private final boolean isMultiStreamingMode;
     private final StreamInfoRefresher streamInfoRefresher;
+    private final Map<StreamConfig, StreamMetadataSyncTaskManager> streamToStreamMetadataSyncManagerMap;
+    private final Function<StreamConfig, StreamMetadataSyncTaskManager> streamMetadataSyncManagerProvider;
 
     /**
      * Pattern for a serialized {@link StreamIdentifier}. The valid format is
@@ -58,7 +59,7 @@ public class StreamMetadataManager {
     private static final Pattern STREAM_IDENTIFIER_PATTERN =
             Pattern.compile("(?<accountId>[0-9]+):(?<streamName>[^:]+):(?<creationEpoch>[0-9]+)");
 
-    public StreamMetadataManager(
+    public PeriodicStreamMetadataSyncTaskManager(
             LeaderDecider leaderDecider,
             String currentWorkerId,
             long delay,
@@ -66,9 +67,12 @@ public class StreamMetadataManager {
             CoordinatorStateDAO coordinatorStateDAO,
             Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
             boolean isMultiStreamingMode,
-            StreamInfoRefresher streamInfoRefresher) {
+            StreamInfoRefresher streamInfoRefresher,
+            Map<StreamConfig, StreamMetadataSyncTaskManager> streamToStreamMetadataSyncManagerMap,
+            Function<StreamConfig, StreamMetadataSyncTaskManager> streamMetadataSyncManagerProvider) {
         this.leaderDecider = leaderDecider;
         this.streamInfoRefresher = streamInfoRefresher;
+        this.streamToStreamMetadataSyncManagerMap = streamToStreamMetadataSyncManagerMap;
         this.shardSyncThreadPool = Executors.newSingleThreadScheduledExecutor();
         this.currentWorkerId = currentWorkerId;
         this.delay = delay;
@@ -76,6 +80,7 @@ public class StreamMetadataManager {
         this.coordinatorStateDAO = coordinatorStateDAO;
         this.currentStreamConfigMap = currentStreamConfigMap;
         this.isMultiStreamingMode = isMultiStreamingMode;
+        this.streamMetadataSyncManagerProvider = streamMetadataSyncManagerProvider;
     }
 
     public synchronized TaskResult start() {
@@ -129,93 +134,84 @@ public class StreamMetadataManager {
             final Set<StreamIdentifier> streamConfigKeys = currentStreamConfigMap.keySet();
 
             // all streams currently tracked in the metadata table
-            List<StreamInfoState> streamInfoStates =
-                    coordinatorStateDAO.listCoordinatorStateByEntityType("STREAM").stream()
-                            .map(state -> (StreamInfoState) state)
-                            .collect(Collectors.toList());
-            List<StreamIdentifier> needToBackfill = new ArrayList<>();
+            List<StreamInfoState> streamInfoStates = streamInfoRefresher.listStreamInfo();
+
+            List<StreamInfoState> needToBackfill = new ArrayList<>();
             // For each of the stream, check if back filling of streamId needs to be done.
             for (StreamIdentifier streamIdentifier : streamConfigKeys) {
-                StreamInfoState streamInfoState;
-                if (isMultiStreamingMode) {
-                    streamInfoState = streamInfoStates.stream()
-                            .filter(state -> StreamIdentifier.multiStreamInstance(state.getKey())
-                                    .streamName()
-                                    .equals(streamIdentifier.streamName()))
-                            .findFirst()
-                            .orElse(null);
-                } else {
-                    streamInfoState = streamInfoStates.stream()
-                            .filter(state -> StreamIdentifier.singleStreamInstance(state.getKey())
-                                    .streamName()
-                                    .equals(streamIdentifier.streamName()))
-                            .findFirst()
-                            .orElse(null);
+                //                StreamInfoState streamInfoState;
+                //                if (isMultiStreamingMode) {
+                //                    streamInfoState = streamInfoStates.stream()
+                //                            .filter(state -> StreamIdentifier.multiStreamInstance(state.getKey())
+                //                                    .streamName()
+                //                                    .equals(streamIdentifier.streamName()))
+                //                            .findFirst()
+                //                            .orElse(null);
+                //                } else {
+                //                    streamInfoState = streamInfoStates.stream()
+                //                            .filter(state -> StreamIdentifier.singleStreamInstance(state.getKey())
+                //                                    .streamName()
+                //                                    .equals(streamIdentifier.streamName()))
+                //                            .findFirst()
+                //                            .orElse(null);
+                //                }
+                //                if (streamInfoState == null) {
+                //                    log.debug("Stream {} is not present in the metadata table, creating it",
+                // streamIdentifier);
+                //                    streamInfoState =
+                //                            new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null,
+                // "STREAM");
+                //                    needToBackfill.add(streamInfoState);
+                //                } else {
+                //                    log.debug("Stream {} is present in the metadata table", streamIdentifier);
+                //                }
+
+                final StreamConfig streamConfig = currentStreamConfigMap.get(streamIdentifier);
+                if (streamConfig == null) {
+                    log.info("Skipping shard sync task for {} as stream is purged", streamIdentifier);
+                    continue;
                 }
-                if (streamInfoState == null) {
-                    log.debug("Stream {} is not present in the metadata table, creating it", streamIdentifier);
-                    needToBackfill.add(streamIdentifier);
-                    streamInfoState =
-                            new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null, "STREAM");
-                    final boolean created = createStreamInfo(streamInfoState);
-                    if (!created) {
-                        log.debug("Create {} did not succeed", streamInfoState);
-                    }
+                final StreamMetadataSyncTaskManager streamMetadataManager;
+                if (streamToStreamMetadataSyncManagerMap.containsKey(streamConfig)) {
+                    log.info("shardSyncTaskManager for stream {} already exists", streamIdentifier.streamName());
+                    streamMetadataManager = streamToStreamMetadataSyncManagerMap.get(streamConfig);
                 } else {
-                    log.debug("Stream {} is present in the metadata table", streamIdentifier);
+                    // If streamConfig of a stream has already been added to currentStreamConfigMap but
+                    // Scheduler failed to create shardSyncTaskManager for it, then Scheduler will not try
+                    // to create one later. So enable PeriodicShardSyncManager to do it for such cases
+                    log.info(
+                            "Failed to get shardSyncTaskManager so creating one for stream {}.",
+                            streamIdentifier.streamName());
+                    streamMetadataManager = streamToStreamMetadataSyncManagerMap.computeIfAbsent(
+                            streamConfig, s -> streamMetadataSyncManagerProvider.apply(s));
+                }
+                if (!streamMetadataManager.submitShardSyncTask()) {
+                    log.warn(
+                            "Failed to submit stream metadata sync task for stream {}. This could be due to the previous pending shard sync task.",
+                            streamIdentifier.streamName());
+                    numSkippedShardSyncTask += 1;
+                } else {
+                    log.info("Submitted stream metadata sync task for stream {}", streamIdentifier.streamName());
                 }
             }
 
-            log.info("List of stream config are: " + streamConfigKeys);
+            if (needToBackfill == null || needToBackfill.size() == 0) {
+                log.debug("No stream info needs to be back filled in this run");
+            }
+
+            isRunSuccess = true;
         } catch (Exception e) {
             log.error("Caught exception while syncing streamId.", e);
         } finally {
             ///  todo content from PeriodicShardSyncManager runShardSync method
+            scope.addData(
+                    "NumStreamsWithPartialLeases",
+                    numStreamsWithPartialLeases,
+                    StandardUnit.COUNT,
+                    MetricsLevel.SUMMARY);
+            MetricsUtil.addSuccessAndLatency(scope, isRunSuccess, runStartMillis, MetricsLevel.SUMMARY);
+            scope.end();
         }
-    }
-
-    /**
-     * Enqueues creation of new stream metadata. Ensures stream is added to coordinator table
-     * before leases can be created.
-     * We want to ensure that starting from now the caller doesn’t create leases
-     * before stream in added to the coordinator table already.
-     *
-     * @param streamInfoState The identifier of the stream to create metadata for
-     * @return true if stream was created, false if stream already exists
-     */
-    public boolean createStreamInfo(StreamInfoState streamInfoState) {
-        try {
-            return create(streamInfoState)
-                    .thenApply(created -> {
-                        if (created) {
-                            log.info("Stream was created successfully");
-                        } else {
-                            log.info("Stream already exists");
-                        }
-                        return created;
-                    })
-                    .join();
-        } catch (Exception e) {
-            log.error("Failed to create stream", e);
-            return false;
-        }
-    }
-
-    private CompletableFuture<Boolean> create(final StreamInfoState streamInfoState) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                return coordinatorStateDAO.createCoordinatorStateIfNotExists(streamInfoState);
-            } catch (Exception e) {
-                log.error("Failed to create stream metadata", e);
-                throw new RuntimeException("Failed to create stream metadata", e);
-            }
-        });
-    }
-
-    public void delete(StreamIdentifier streamIdentifier)
-            throws ProvisionedThroughputException, InvalidStateException, DependencyException {
-        coordinatorStateDAO.deleteCoordinatorState(
-                new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null, "STREAM"));
     }
 
     /**

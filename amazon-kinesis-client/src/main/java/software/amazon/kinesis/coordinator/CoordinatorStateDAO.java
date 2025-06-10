@@ -120,7 +120,7 @@ public class CoordinatorStateDAO {
      * @return list of state
      */
     public List<CoordinatorState> listCoordinatorStateByEntityType(String entityType)
-            throws ProvisionedThroughputException, DependencyException, InvalidStateException {
+            throws ProvisionedThroughputException, DependencyException {
         log.debug("Listing coordinatorState");
 
         final Map<String, AttributeValue> expressionAttributeValues = ImmutableMap.of(

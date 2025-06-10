@@ -6,7 +6,6 @@ import java.util.stream.Collectors;
 
 import lombok.extern.slf4j.Slf4j;
 import software.amazon.kinesis.annotations.KinesisClientInternalApi;
-import software.amazon.kinesis.common.StreamIdentifier;
 import software.amazon.kinesis.coordinator.CoordinatorStateDAO;
 import software.amazon.kinesis.leases.exceptions.DependencyException;
 import software.amazon.kinesis.leases.exceptions.InvalidStateException;
@@ -56,21 +55,13 @@ public class DynamoDBStreamInfoRefresher implements StreamInfoRefresher {
     }
 
     @Override
-    public boolean deleteStreamInfo(StreamIdentifier streamIdentifier)
+    public boolean deleteStreamInfo(StreamInfoState streamInfoState)
             throws ProvisionedThroughputException, DependencyException, InvalidStateException {
-        return coordinatorStateDAO.deleteCoordinatorState(
-                new StreamInfoState(streamIdentifier.serialize(), currentWorkerId, null, "STREAM"));
+        return coordinatorStateDAO.deleteCoordinatorState(streamInfoState);
     }
 
     @Override
-    public boolean updateStreamInfo(StreamInfoState streamInfoState)
-            throws ProvisionedThroughputException, DependencyException {
-        return false;
-    }
-
-    @Override
-    public List<StreamInfoState> listStreamInfo(StreamIdentifier streamIdentifier)
-            throws ProvisionedThroughputException, DependencyException, InvalidStateException {
+    public List<StreamInfoState> listStreamInfo() throws ProvisionedThroughputException, DependencyException {
         return coordinatorStateDAO.listCoordinatorStateByEntityType("STREAM").stream()
                 .map(state -> (StreamInfoState) state)
                 .collect(Collectors.toList());

@@ -45,5 +45,10 @@ public enum TaskType {
     /**
      * Sync leases/activities corresponding to Kinesis shards.
      */
-    SHARDSYNC
+    SHARDSYNC,
+
+    /**
+     * Sync stream metadata info corresponding to Kinesis stream.
+     */
+    STREAM_METADATA_SYNC
 }

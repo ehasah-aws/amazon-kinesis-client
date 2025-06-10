@@ -20,11 +20,9 @@ import java.util.concurrent.ConcurrentMap;
 
 import software.amazon.kinesis.common.StreamConfig;
 import software.amazon.kinesis.common.StreamIdentifier;
-import software.amazon.kinesis.coordinator.CoordinatorStateDAO;
 import software.amazon.kinesis.coordinator.DeletedStreamListProvider;
-import software.amazon.kinesis.coordinator.LeaderDecider;
-import software.amazon.kinesis.coordinator.StreamMetadataManager;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
+import software.amazon.kinesis.coordinator.streamInfo.StreamMetadataSyncTaskManager;
 import software.amazon.kinesis.leases.dynamodb.DynamoDBLeaseRefresher;
 import software.amazon.kinesis.lifecycle.ShardConsumer;
 import software.amazon.kinesis.metrics.MetricsFactory;
@@ -80,13 +78,11 @@ public interface LeaseManagementFactory {
         throw new UnsupportedOperationException("Not implemented");
     }
 
-    StreamMetadataManager createStreamMetadataManager(
-            final LeaderDecider leaderDecider,
-            final long delay,
-            final MetricsFactory metricsFactory,
-            CoordinatorStateDAO coordinatorStateDAO,
-            final Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
-            StreamInfoRefresher streamInfoRefresher);
-
     LeaseCleanupManager createLeaseCleanupManager(MetricsFactory metricsFactory);
+
+    public StreamMetadataSyncTaskManager createStreamMetadataSyncManager(
+            Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
+            StreamInfoRefresher streamInfoRefresher,
+            MetricsFactory metricsFactory,
+            StreamConfig streamConfig);
 }

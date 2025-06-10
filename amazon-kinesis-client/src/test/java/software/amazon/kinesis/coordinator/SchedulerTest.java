@@ -65,6 +65,7 @@ import software.amazon.kinesis.common.InitialPositionInStreamExtended;
 import software.amazon.kinesis.common.StreamConfig;
 import software.amazon.kinesis.common.StreamIdentifier;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
+import software.amazon.kinesis.coordinator.streamInfo.StreamMetadataSyncTaskManager;
 import software.amazon.kinesis.exceptions.KinesisClientLibException;
 import software.amazon.kinesis.exceptions.KinesisClientLibNonRetryableException;
 import software.amazon.kinesis.leases.HierarchicalShardSyncer;
@@ -1735,19 +1736,17 @@ public class SchedulerTest {
         }
 
         @Override
-        public StreamMetadataManager createStreamMetadataManager(
-                LeaderDecider leaderDecider,
-                long delay,
-                MetricsFactory metricsFactory,
-                CoordinatorStateDAO coordinatorStateDAO,
-                Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
-                StreamInfoRefresher streamInfoRefresher) {
-            return null;
+        public LeaseCleanupManager createLeaseCleanupManager(MetricsFactory metricsFactory) {
+            return leaseCleanupManager;
         }
 
         @Override
-        public LeaseCleanupManager createLeaseCleanupManager(MetricsFactory metricsFactory) {
-            return leaseCleanupManager;
+        public StreamMetadataSyncTaskManager createStreamMetadataSyncManager(
+                Map<StreamIdentifier, StreamConfig> currentStreamConfigMap,
+                StreamInfoRefresher streamInfoRefresher,
+                MetricsFactory metricsFactory,
+                StreamConfig streamConfig) {
+            return null;
         }
     }
 

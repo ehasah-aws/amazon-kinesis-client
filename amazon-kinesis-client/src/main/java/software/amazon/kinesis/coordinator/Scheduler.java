@@ -67,6 +67,8 @@ import software.amazon.kinesis.coordinator.migration.MigrationStateMachine;
 import software.amazon.kinesis.coordinator.migration.MigrationStateMachineImpl;
 import software.amazon.kinesis.coordinator.streamInfo.DynamoDBStreamInfoRefresher;
 import software.amazon.kinesis.coordinator.streamInfo.StreamInfoRefresher;
+import software.amazon.kinesis.coordinator.streamInfo.StreamInfoState;
+import software.amazon.kinesis.coordinator.streamInfo.StreamMetadataSyncTaskManager;
 import software.amazon.kinesis.leader.DynamoDBLockBasedLeaderDecider;
 import software.amazon.kinesis.leader.MigrationAdaptiveLeaderDecider;
 import software.amazon.kinesis.leases.HierarchicalShardSyncer;
@@ -163,8 +165,11 @@ public class Scheduler implements Runnable {
     private final LeaseCoordinator leaseCoordinator;
     private final Function<StreamConfig, ShardSyncTaskManager> shardSyncTaskManagerProvider;
     private final Map<StreamConfig, ShardSyncTaskManager> streamToShardSyncTaskManagerMap = new ConcurrentHashMap<>();
+    private final Function<StreamConfig, StreamMetadataSyncTaskManager> streamMetadataSyncManagerProvider;
+    private final Map<StreamConfig, StreamMetadataSyncTaskManager> streamToStreamMetadataSyncManagerMap =
+            new ConcurrentHashMap<>();
     private final PeriodicShardSyncManager leaderElectedPeriodicShardSyncManager;
-    private final StreamMetadataManager streamMetadataManager;
+    private final PeriodicStreamMetadataSyncTaskManager periodicStreamMetadataSyncTaskManager;
     private final StreamInfoRefresher streamInfoRefresher;
     private final ShardPrioritization shardPrioritization;
     private final boolean cleanupLeasesUponShardCompletion;
@@ -334,6 +339,8 @@ public class Scheduler implements Runnable {
         this.deletedStreamListProvider = new DeletedStreamListProvider();
         this.shardSyncTaskManagerProvider = streamConfig -> leaseManagementFactory.createShardSyncTaskManager(
                 this.metricsFactory, streamConfig, this.deletedStreamListProvider);
+        this.streamMetadataSyncManagerProvider = streamConfig -> leaseManagementFactory.createStreamMetadataSyncManager(
+                currentStreamConfigMap, streamInfoRefresher(), this.metricsFactory, streamConfig);
         this.shardPrioritization = this.coordinatorConfig.shardPrioritization();
         this.cleanupLeasesUponShardCompletion = this.leaseManagementConfig.cleanupLeasesUponShardCompletion();
         this.skipShardSyncAtWorkerInitializationIfLeasesExist =
@@ -380,8 +387,17 @@ public class Scheduler implements Runnable {
         this.taskFactory = leaseManagementConfig().consumerTaskFactory();
         this.streamInfoRefresher =
                 new DynamoDBStreamInfoRefresher(coordinatorStateDAO, leaseManagementConfig.workerIdentifier());
-        this.streamMetadataManager = leaseManagementFactory.createStreamMetadataManager(
-                leaderDecider, 10000, metricsFactory, coordinatorStateDAO, currentStreamConfigMap, streamInfoRefresher);
+        this.periodicStreamMetadataSyncTaskManager = new PeriodicStreamMetadataSyncTaskManager(
+                leaderDecider(),
+                leaseManagementConfig.workerIdentifier(),
+                10000,
+                metricsFactory(),
+                coordinatorStateDAO,
+                currentStreamConfigMap,
+                isMultiStreamMode,
+                streamInfoRefresher,
+                streamToStreamMetadataSyncManagerMap,
+                streamMetadataSyncManagerProvider);
     }
 
     /**
@@ -516,7 +532,7 @@ public class Scheduler implements Runnable {
                     }
                     log.info("Scheduling periodicShardSync");
                     leaderElectedPeriodicShardSyncManager.start(leaderDecider);
-                    streamMetadataManager.start();
+                    periodicStreamMetadataSyncTaskManager.start();
                     streamSyncWatch.start();
                     isDone = true;
                 } catch (final Exception e) {
@@ -528,7 +544,7 @@ public class Scheduler implements Runnable {
                     try {
                         Thread.sleep(schedulerInitializationBackoffTimeMillis);
                         leaderElectedPeriodicShardSyncManager.stop();
-                        streamMetadataManager.stop();
+                        periodicStreamMetadataSyncTaskManager.stop();
                     } catch (InterruptedException e) {
                         log.debug("Sleep interrupted while initializing worker.");
                     }
@@ -659,6 +675,11 @@ public class Scheduler implements Runnable {
                         shardSyncTaskManager.submitShardSyncTask();
                         currentStreamConfigMap.put(streamIdentifier, streamConfig);
                         streamsSynced.add(streamIdentifier);
+
+                        // Sync stream metadata in CoordinatorState table
+                        StreamMetadataSyncTaskManager streamMetadataSyncTaskManager =
+                                createOrGetStreamMetadataSyncTaskManager(streamConfig);
+                        streamMetadataSyncTaskManager.submitShardSyncTask();
                     } else {
                         log.debug("{} is already being processed - skipping shard sync.", streamIdentifier);
                     }
@@ -840,9 +861,11 @@ public class Scheduler implements Runnable {
             if (deleteMultiStreamLeasesAndStreamInfo(streamIdToShardsMap.get(streamIdentifier.serialize()))) {
                 staleStreamDeletionMap.remove(streamIdentifier);
                 streamsSynced.add(streamIdentifier);
+
+                // Cleaning up streamInfo from coordinatorState for old/deleted streams
+                streamInfoRefresher.deleteStreamInfo(new StreamInfoState(
+                        streamIdentifier.serialize(), leaseManagementConfig.workerIdentifier(), null, "STREAM"));
             }
-            // Cleaning up streamInfo from coordinatorState for old/deleted streams
-            streamMetadataManager.delete(streamIdentifier);
         }
         if (!streamsSynced.isEmpty()) {
             // map keys are StreamIdentifiers, which are members of StreamConfig, and therefore redundant
@@ -1050,7 +1073,7 @@ public class Scheduler implements Runnable {
             leaseCleanupManager.shutdown();
 
             leaderElectedPeriodicShardSyncManager.stop();
-            streamMetadataManager.stop();
+            periodicStreamMetadataSyncTaskManager.stop();
             workerStateChangeListener.onWorkerStateChange(WorkerStateChangeListener.WorkerState.SHUT_DOWN);
         }
     }
@@ -1126,6 +1149,11 @@ public class Scheduler implements Runnable {
     private ShardSyncTaskManager createOrGetShardSyncTaskManager(StreamConfig streamConfig) {
         return streamToShardSyncTaskManagerMap.computeIfAbsent(
                 streamConfig, s -> shardSyncTaskManagerProvider.apply(s));
+    }
+
+    private StreamMetadataSyncTaskManager createOrGetStreamMetadataSyncTaskManager(StreamConfig streamConfig) {
+        return streamToStreamMetadataSyncManagerMap.computeIfAbsent(
+                streamConfig, s -> streamMetadataSyncManagerProvider().apply(s));
     }
 
     protected ShardConsumer buildConsumer(
