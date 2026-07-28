@@ -63,7 +63,9 @@ def is_valid_version(version, mode):
     """
     if mode == 'rollback':
         if version == KclClientVersion.VERSION_2X.value:
-            print("Your KCL application already runs in a mode compatible with KCL 2.x. You can deploy the code with the previous KCL version if you still experience an issue.")
+            print("Your KCL application already runs in a mode compatible with KCL 2.x."
+                  " Please rollback to Phase 1 by deploying your KCL 3.5.x application with"
+                  "  the Phase 1 configuration, if you still experience an issue.")
             return True
         if version in [KclClientVersion.UPGRADE_FROM_2X.value,
                        KclClientVersion.VERSION_3X_WITH_ROLLBACK.value]:
@@ -72,7 +74,7 @@ def is_valid_version(version, mode):
             print("Cannot roll back the KCL application."
                   " It is not in a state that supports rollback.")
             return False
-        print("Migration to KCL 3.0 not in progress or application_name / coordinator_state_table_name is incorrect."
+        print("Migration to KCL 3.0 not in progress or application_name / lease_table_name is incorrect."
               " Please double check and run again with correct arguments.")
         return False
 
@@ -88,7 +90,7 @@ def is_valid_version(version, mode):
                   " Application has already migrated.")
             return False
         print("Cannot roll-forward because migration to KCL 3.0 is not in progress or application_name"
-              " / coordinator_state_table_name is incorrect. Please double check and run again with correct arguments.")
+              " / lease_table_name is incorrect. Please double check and run again with correct arguments.")
         return False
     print(f"Invalid mode: {mode}. Mode must be either 'rollback' or 'rollforward'.")
     return False
@@ -137,7 +139,6 @@ def validate_tables(dynamodb_client, operation, lease_table_name=None):
 
     :param dynamodb_client: A boto3 DynamoDB client object
     :param operation: Rollback or Roll-forward for logging
-    :param coordinator_state_table_name: Name of the coordinator state table
     :param lease_table_name: Name of the DynamoDB KCL lease table (optional)
     :return: True if all required tables exist, False otherwise
     """
@@ -212,10 +213,10 @@ def get_current_state(dynamodb_client, table_name):
 
 def rollback_client_version(dynamodb_client, table_name, history):
     """
-    Update the client version in the coordinator state table to initiate rollback.
+    Update the client version in the lease table to initiate rollback.
 
     :param dynamodb_client: Boto3 DynamoDB client
-    :param table_name: Name of the coordinator state DDB table
+    :param table_name: Name of the DynamoDB lease table
     :param history: Updated history attribute as a DynamoDB-formatted dictionary
     :return: A tuple containing:
              - success (bool): True if client version was successfully updated, False otherwise
@@ -256,8 +257,8 @@ def rollback_client_version(dynamodb_client, table_name, history):
         return True, replaced_version
     except ClientError as e:
         if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-            print("Unable to rollback, as application is not in a state that allows rollback."
-                  "Ensure that the given application_name or coordinator_state_table_name is correct and"
+            print("Unable to rollback, as application is not in a state that allows rollback. "
+                  "Ensure that the given application_name or lease_table_name is correct and"
                   " you have followed all prior migration steps.")
         else:
             print(f"An unexpected error occurred while rolling back: {str(e)}"
@@ -267,11 +268,11 @@ def rollback_client_version(dynamodb_client, table_name, history):
 
 def rollfoward_client_version(dynamodb_client, table_name, history):
     """
-    Update the client version in the coordinator state table to initiate roll-forward
+    Update the client version in the lease table to initiate roll-forward
     conditionally if application is currently in rolled back state.
 
     :param dynamodb_client: Boto3 DynamoDB client
-    :param table_name: Name of the coordinator state DDB table
+    :param table_name: Name of the DynamoDB lease table
     :param history: Updated history attribute as a DynamoDB-formatted dictionary
     :return: True if client version was successfully updated, False otherwise
     """
@@ -300,7 +301,7 @@ def rollfoward_client_version(dynamodb_client, table_name, history):
     except ClientError as e:
         if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
             print("Unable to roll-forward because application is not in rolled back state."
-                  " Ensure that the given application_name or coordinator_state_table_name is correct"
+                  " Ensure that the given application_name or lease_table_name is correct"
                   " and you have followed all prior migration steps.")
         else:
             print(f"Unable to roll-forward due to error: {str(e)}. "
@@ -367,12 +368,10 @@ def delete_gsi_if_exists(dynamodb_client, table_name):
 def perform_rollback(dynamodb_client, lease_table_name):
     """
     Perform KCL 3.0 migration rollback by updating MigrationState for the KCL application.
-    Rolls client version back, removes GSI from lease table, deletes worker metrics table.
+    Rolls client version back for 2X functionality and removes GSI from lease table.
 
     :param dynamodb_client: Boto3 DynamoDB client
-    :param coordinator_state_table_name: Name of the DynamoDB coordinator state table
-    :param coordinator_state_table_name: Name of the DynamoDB coordinator state table
-    :param worker_metrics_table_name: Name of the DynamoDB worker metrics table
+    :param lease_table_name: Name of the DynamoDB lease table
     """
     if not validate_tables(dynamodb_client, "Rollback", lease_table_name):
         return
@@ -402,12 +401,13 @@ def perform_rollback(dynamodb_client, lease_table_name):
 
     # Log success
     if initial_version == KclClientVersion.UPGRADE_FROM_2X.value:
-        print("\nRollback completed. Your application was running 2x compatible functionality.")
-        print("Please rollback to your previous application binaries by deploying the code with your previous KCL version.")
+        print("\nRollback completed. Your application was running Phase 2 (2x compatible) functionality.")
+        print("Please rollback to Phase 1 by deploying your KCL 3.5.x application with the Phase 1 configuration.")
     elif initial_version == KclClientVersion.VERSION_3X_WITH_ROLLBACK.value:
-        print("\nRollback completed. Your KCL Application was running 3x functionality and will rollback to 2x compatible functionality.")
+        print("\nRollback completed. Your KCL application was running Phase 2 (3x) functionality"
+              " and has been rolled back to Phase 2 (2x compatible) mode.")
         print("If you don't see mitigation after a short period of time,"
-              " please rollback to your previous application binaries by deploying the code with your previous KCL version.")
+              " please rollback to Phase 1 by deploying your KCL 3.5.x application with the Phase 1 configuration.")
     elif initial_version == KclClientVersion.VERSION_2X.value:
         print("\nApplication was already rolled back. Any KCLv3 resources that could be deleted were cleaned up"
               " to avoid charges until the application can be rolled forward with migration.")
@@ -418,7 +418,7 @@ def perform_rollforward(dynamodb_client, lease_table_name):
     Perform KCL 3.0 migration roll-forward by updating MigrationState for the KCL application
 
     :param dynamodb_client: Boto3 DynamoDB client
-    :param coordinator_state_table_name: Name of the DynamoDB table
+    :param lease_table_name: Name of the DynamoDB lease table
     """
     if not validate_tables(dynamodb_client, "Roll-forward", lease_table_name):
         return
@@ -437,12 +437,10 @@ def perform_rollforward(dynamodb_client, lease_table_name):
 
 def run_kcl_migration(mode, lease_table_name):
     """
-    Update the MigrationState in CoordinatorState DDB Table
+    Update the MigrationState in the DynamoDB lease table.
 
     :param mode: Either 'rollback' or 'rollforward'
     :param lease_table_name: Name of the DynamoDB KCL lease table
-    :param coordinator_state_table_name: Name of the DynamoDB coordinator state table
-    :param worker_metrics_table_name: Name of the DynamoDB worker metrics table
     """
     dynamodb_client = boto3.client('dynamodb', config=config)
 
@@ -455,20 +453,10 @@ def run_kcl_migration(mode, lease_table_name):
 
 
 def validate_args(args):
-    if args.mode == 'rollforward':
-        if not (args.application_name):
-            raise ValueError(
-                "For rollforward mode, application_name must be provided."
-            )
-    else:
-        if args.application_name:
-            return
-
-        if not (args.lease_table_name):
-            raise ValueError(
-                "For rollback mode, either application_name or lease_table_name " +
-                "must be provided."
-            )
+    if not (args.application_name or args.lease_table_name):
+        raise ValueError(
+            "Either application_name or lease_table_name must be provided."
+        )
 
 def process_table_names(args):
     """
@@ -476,7 +464,7 @@ def process_table_names(args):
     Args:
         args: Parsed command line arguments
     Returns:
-        tuple: (mode, lease_table_name, coordinator_state_table_name, worker_metrics_table_name)
+        tuple: (mode, lease_table_name)
     """
     mode_input = args.mode
     application_name_input = args.application_name
