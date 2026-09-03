@@ -123,8 +123,8 @@ public class MigrationStateMachineImpl implements MigrationStateMachine {
                     createMigrationClientVersionState(dataForInitialization.getKey(), startingMigrationState);
             startingState.enter(ClientVersion.CLIENT_VERSION_INIT);
 
-            // Only set after enter() succeeds — this is the guard that prevents
-            // double-initialization. Setting it before enter() caused the zombie bug.
+            // Only set startingClientVersion after enter() succeeds — this is the guard
+            // that prevents re-initialization from being skipped on retry.
             startingClientVersion = dataForInitialization.getKey();
             currentMigrationClientVersionState = startingState;
             log.info("MigrationStateMachine initial clientVersion {}", startingClientVersion);
