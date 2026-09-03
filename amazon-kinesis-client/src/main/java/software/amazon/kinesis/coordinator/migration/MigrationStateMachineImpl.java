@@ -117,8 +117,8 @@ public class MigrationStateMachineImpl implements MigrationStateMachine {
 
             // Create and enter the starting state. The state's enter() method
             // writes MigrationState to DDB (except CLIENT_VERSION_INIT which skips DDB)
-            // and initializes components. If enter() throws DependencyException,
-            // startingClientVersion remains null so the next retry re-enters this block.
+            // and initializes components. If enter() throws DependencyException, Scheduler
+            // retries the whole initialization loop.
             final MigrationClientVersionState startingState =
                     createMigrationClientVersionState(dataForInitialization.getKey(), startingMigrationState);
             startingState.enter(ClientVersion.CLIENT_VERSION_INIT);
