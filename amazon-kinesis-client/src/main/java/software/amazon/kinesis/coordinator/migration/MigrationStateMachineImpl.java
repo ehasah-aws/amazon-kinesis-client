@@ -113,16 +113,19 @@ public class MigrationStateMachineImpl implements MigrationStateMachine {
                             coordinatorStateDAO, clientVersionConfig, random, workerId);
             final SimpleEntry<ClientVersion, MigrationState> dataForInitialization =
                     startingStateInitializer.getInitialState();
-            startingClientVersion = dataForInitialization.getKey();
             startingMigrationState = dataForInitialization.getValue();
 
             // Create and enter the starting state. The state's enter() method
             // writes MigrationState to DDB (except CLIENT_VERSION_INIT which skips DDB)
-            // and initializes components. If enter() throws DependencyException, Scheduler
-            // retries the whole initialization loop.
+            // and initializes components. If enter() throws DependencyException,
+            // startingClientVersion remains null so the next retry re-enters this block.
             final MigrationClientVersionState startingState =
-                    createMigrationClientVersionState(startingClientVersion, startingMigrationState);
+                    createMigrationClientVersionState(dataForInitialization.getKey(), startingMigrationState);
             startingState.enter(ClientVersion.CLIENT_VERSION_INIT);
+
+            // Only set after enter() succeeds — this is the guard that prevents
+            // double-initialization. Setting it before enter() caused the zombie bug.
+            startingClientVersion = dataForInitialization.getKey();
             currentMigrationClientVersionState = startingState;
             log.info("MigrationStateMachine initial clientVersion {}", startingClientVersion);
 
