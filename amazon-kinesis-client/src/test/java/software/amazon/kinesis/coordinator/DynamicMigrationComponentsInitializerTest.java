@@ -409,10 +409,6 @@ public class DynamicMigrationComponentsInitializerTest {
                 77.0, statsCaptor.getValue().getMetricStats().get("CPU").get(2));
     }
 
-    // ========================
-    // Retry tests — verifies initializeStartupComponents is not called twice on retry
-    // ========================
-
     @Test
     public void testRetry_3x_gsiFailsThenSucceeds_noDoubleInit() throws Exception {
         // First call: GSI times out. Second call: GSI succeeds.

@@ -349,10 +349,6 @@ public class MigrationStateMachineTest {
         verify(mockInitializer).initializeClientVersionFor3x(ClientVersion.CLIENT_VERSION_3X_WITH_ROLLBACK);
     }
 
-    // ========================
-    // Retry after init failure tests — verifies the zombie worker bug fix
-    // ========================
-
     @Test
     public void testInitializeRetry_3x_enterFailsThenSucceeds() throws Exception {
         // First call to initializeClientVersionFor3x throws, simulating GSI timeout
