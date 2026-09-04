@@ -113,7 +113,6 @@ public class MigrationStateMachineImpl implements MigrationStateMachine {
                             coordinatorStateDAO, clientVersionConfig, random, workerId);
             final SimpleEntry<ClientVersion, MigrationState> dataForInitialization =
                     startingStateInitializer.getInitialState();
-            startingClientVersion = dataForInitialization.getKey();
             startingMigrationState = dataForInitialization.getValue();
 
             // Create and enter the starting state. The state's enter() method
@@ -121,8 +120,12 @@ public class MigrationStateMachineImpl implements MigrationStateMachine {
             // and initializes components. If enter() throws DependencyException, Scheduler
             // retries the whole initialization loop.
             final MigrationClientVersionState startingState =
-                    createMigrationClientVersionState(startingClientVersion, startingMigrationState);
+                    createMigrationClientVersionState(dataForInitialization.getKey(), startingMigrationState);
             startingState.enter(ClientVersion.CLIENT_VERSION_INIT);
+
+            // Only set startingClientVersion after enter() succeeds — this is the guard
+            // that prevents re-initialization from being skipped on retry.
+            startingClientVersion = dataForInitialization.getKey();
             currentMigrationClientVersionState = startingState;
             log.info("MigrationStateMachine initial clientVersion {}", startingClientVersion);
 

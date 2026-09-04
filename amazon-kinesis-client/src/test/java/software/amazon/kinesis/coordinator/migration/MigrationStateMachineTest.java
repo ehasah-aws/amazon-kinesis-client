@@ -41,6 +41,7 @@ import software.amazon.kinesis.metrics.MetricsFactory;
 import software.amazon.kinesis.metrics.NullMetricsFactory;
 import software.amazon.kinesis.worker.metricstats.WorkerMetricStatsDAO;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -346,5 +347,97 @@ public class MigrationStateMachineTest {
         log.info("TestLog ----------- successful upgrade done -------------");
         Assertions.assertEquals(ClientVersion.CLIENT_VERSION_3X, stateMachineUnderTest.getCurrentClientVersion());
         verify(mockInitializer).initializeClientVersionFor3x(ClientVersion.CLIENT_VERSION_3X_WITH_ROLLBACK);
+    }
+
+    @Test
+    public void testInitializeRetry_3x_enterFailsThenSucceeds() throws Exception {
+        // First call to initializeClientVersionFor3x throws, simulating GSI timeout
+        Mockito.doThrow(new DependencyException(new RuntimeException("GSI creation timed out")))
+                .doNothing()
+                .when(mockInitializer)
+                .initializeClientVersionFor3x(any());
+
+        final MigrationStateMachineImpl stateMachine = new MigrationStateMachineImpl(
+                nullMetricsFactory,
+                mockTimeProvider,
+                mockCoordinatorStateDAO,
+                mockMigrationStateMachineThreadPool,
+                ClientVersionConfig.CLIENT_VERSION_CONFIG_3X,
+                mockRandom,
+                mockInitializer,
+                WORKER_ID,
+                Duration.ofMinutes(0).getSeconds());
+
+        // First initialize() should throw
+        assertThrows(DependencyException.class, stateMachine::initialize);
+        // startingClientVersion should still be null — retry must not be skipped
+        Assertions.assertNull(stateMachine.getStartingClientVersion());
+
+        // Second initialize() should succeed
+        stateMachine.initialize();
+        Assertions.assertEquals(ClientVersion.CLIENT_VERSION_3X, stateMachine.getStartingClientVersion());
+
+        // initializeClientVersionFor3x should have been called twice (once per attempt)
+        verify(mockInitializer, times(2)).initializeClientVersionFor3x(any());
+    }
+
+    @Test
+    public void testInitializeRetry_upgradeFrom2x_enterFailsThenSucceeds() throws Exception {
+        // First call throws, simulating DDB failure during enter
+        Mockito.doThrow(new DependencyException(new RuntimeException("DDB connection timeout")))
+                .doNothing()
+                .when(mockInitializer)
+                .initializeClientVersionForUpgradeFrom2x(any());
+
+        final MigrationStateMachineImpl stateMachine = new MigrationStateMachineImpl(
+                nullMetricsFactory,
+                mockTimeProvider,
+                mockCoordinatorStateDAO,
+                mockMigrationStateMachineThreadPool,
+                ClientVersionConfig.CLIENT_VERSION_CONFIG_COMPATIBLE_WITH_2X,
+                mockRandom,
+                mockInitializer,
+                WORKER_ID,
+                Duration.ofMinutes(0).getSeconds());
+
+        // First initialize() should throw
+        assertThrows(DependencyException.class, stateMachine::initialize);
+        Assertions.assertNull(stateMachine.getStartingClientVersion());
+
+        // Second initialize() should succeed
+        stateMachine.initialize();
+        Assertions.assertEquals(ClientVersion.CLIENT_VERSION_UPGRADE_FROM_2X, stateMachine.getStartingClientVersion());
+
+        verify(mockInitializer, times(2)).initializeClientVersionForUpgradeFrom2x(any());
+    }
+
+    @Test
+    public void testInitializeRetry_phase1_enterFailsThenSucceeds() throws Exception {
+        // initializeClientVersionForPhase1 doesn't throw checked exceptions,
+        // so use RuntimeException to simulate failure
+        Mockito.doThrow(new RuntimeException("DDB failure"))
+                .doNothing()
+                .when(mockInitializer)
+                .initializeClientVersionForPhase1();
+
+        final MigrationStateMachineImpl stateMachine = new MigrationStateMachineImpl(
+                nullMetricsFactory,
+                mockTimeProvider,
+                mockCoordinatorStateDAO,
+                mockMigrationStateMachineThreadPool,
+                ClientVersionConfig.CLIENT_VERSION_CONFIG_COMPATIBLE_WITH_2X_PHASE1,
+                mockRandom,
+                mockInitializer,
+                WORKER_ID,
+                Duration.ofMinutes(0).getSeconds());
+
+        // First initialize() should throw (wrapped as RuntimeException)
+        Assertions.assertThrows(RuntimeException.class, stateMachine::initialize);
+        Assertions.assertNull(stateMachine.getStartingClientVersion());
+
+        // Second initialize() should succeed
+        stateMachine.initialize();
+
+        verify(mockInitializer, times(2)).initializeClientVersionForPhase1();
     }
 }

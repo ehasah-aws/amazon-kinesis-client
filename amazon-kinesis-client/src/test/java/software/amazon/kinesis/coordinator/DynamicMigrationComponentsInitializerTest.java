@@ -409,6 +409,77 @@ public class DynamicMigrationComponentsInitializerTest {
                 77.0, statsCaptor.getValue().getMetricStats().get("CPU").get(2));
     }
 
+    @Test
+    public void testRetry_3x_gsiFailsThenSucceeds_noDoubleInit() throws Exception {
+        // First call: GSI times out. Second call: GSI succeeds.
+        when(mockLeaseRefresher.waitUntilLeaseOwnerToLeaseKeyIndexExists(anyLong(), anyLong()))
+                .thenReturn(false)
+                .thenReturn(true);
+
+        // First call should throw
+        assertThrows(
+                DependencyException.class,
+                () -> migrationInitializer.initializeClientVersionFor3x(ClientVersion.CLIENT_VERSION_INIT));
+
+        // Second call should succeed
+        migrationInitializer.initializeClientVersionFor3x(ClientVersion.CLIENT_VERSION_INIT);
+
+        // initializeStartupComponents internals should only be called once
+        verify(mockWorkerMetricsManager, Mockito.times(1)).startManager();
+        verify(mockDdbLockBasedLeaderDeciderCreator, Mockito.times(1)).get();
+        verify(mockLamCreator, Mockito.times(1)).apply(any(), any());
+
+        // GSI creation and idempotent operations should be called twice (once per attempt)
+        verify(mockLeaseRefresher, Mockito.times(2)).createLeaseOwnerToLeaseKeyIndexIfNotExists();
+        verify(mockLam).start();
+    }
+
+    @Test
+    public void testRetry_upgradeFrom2x_gsiFailsThenSucceeds_noDoubleInit() throws Exception {
+        when(mockLeaseRefresher.waitUntilLeaseOwnerToLeaseKeyIndexExists(anyLong(), anyLong()))
+                .thenReturn(false)
+                .thenReturn(true);
+
+        // UpgradeFrom2x uses createGsi(false) — non-blocking, but startWorkerMetricsReporting can throw
+        Mockito.doThrow(new DependencyException(new RuntimeException("WorkerMetrics init failed")))
+                .doNothing()
+                .when(mockWorkerMetricsDAO)
+                .initialize();
+
+        assertThrows(
+                DependencyException.class,
+                () -> migrationInitializer.initializeClientVersionForUpgradeFrom2x(ClientVersion.CLIENT_VERSION_INIT));
+
+        migrationInitializer.initializeClientVersionForUpgradeFrom2x(ClientVersion.CLIENT_VERSION_INIT);
+
+        // Non-idempotent startup components called only once
+        verify(mockWorkerMetricsManager, Mockito.times(1)).startManager();
+        verify(mockDeterministicLeaderDeciderCreator, Mockito.times(1)).get();
+        verify(mockLamCreator, Mockito.times(1)).apply(any(), any());
+    }
+
+    @Test
+    public void testRetry_3xWithRollback_metricsFailsThenSucceeds_noDoubleInit() throws Exception {
+        // startWorkerMetricsReporting throws on first call
+        Mockito.doThrow(new DependencyException(new RuntimeException("WorkerMetrics init failed")))
+                .doNothing()
+                .when(mockWorkerMetricsDAO)
+                .initialize();
+
+        assertThrows(
+                DependencyException.class,
+                () -> migrationInitializer.initializeClientVersionFor3xWithRollback(ClientVersion.CLIENT_VERSION_INIT));
+
+        migrationInitializer.initializeClientVersionFor3xWithRollback(ClientVersion.CLIENT_VERSION_INIT);
+
+        // Non-idempotent startup components called only once
+        verify(mockWorkerMetricsManager, Mockito.times(1)).startManager();
+        verify(mockDdbLockBasedLeaderDeciderCreator, Mockito.times(1)).get();
+        verify(mockAdaptiveLeaderDeciderCreator, Mockito.times(1)).get();
+        verify(mockLamCreator, Mockito.times(1)).apply(any(), any());
+        verify(mockLam).start();
+    }
+
     private abstract static class DynamoDBLockBasedLeaderDeciderSupplier
             implements Supplier<DynamoDBLockBasedLeaderDecider> {}
 
